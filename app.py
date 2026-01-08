@@ -796,20 +796,20 @@ def main():
 
     with col1:
         st.markdown(geist_card(
-            "Workouts",
-            "Exercise tracking, training load, and recovery."
+            "Genetic Insights",
+            "DNA analysis, disease risk, pharmacogenomics, and traits."
         ), unsafe_allow_html=True)
 
     with col2:
         st.markdown(geist_card(
-            "Devices",
-            "Connect Oura, Apple Watch, Whoop, Garmin, and more."
+            "Workouts",
+            "Exercise tracking, training load, and recovery."
         ), unsafe_allow_html=True)
 
     with col3:
         st.markdown(geist_card(
-            "Settings",
-            "Configure preferences and manage your data."
+            "Devices",
+            "Connect Oura, Apple Watch, Whoop, Garmin, and more."
         ), unsafe_allow_html=True)
 
 
