@@ -7,6 +7,11 @@ Handles data persistence within Streamlit sessions.
 import streamlit as st
 from typing import List, Dict, Optional, Any
 from datetime import datetime
+from pathlib import Path
+
+# Dataset constants
+SYNTHETIC_DATASET_ID = "synthetic"
+SYNTHETIC_DATASET_NAME = "Synthetic (Demo)"
 
 
 def init_storage():
@@ -19,8 +24,13 @@ def init_storage():
         'health_data': None,
         'patient_profile': None,
         'lab_data': None,
+        'genetic_data': None,
+        'workouts': None,
         'demo_mode': True,
         'data_loaded': False,
+        # Dataset selection
+        'active_dataset': SYNTHETIC_DATASET_ID,
+        'active_subject': None,
         'settings': {
             'weight_unit': 'kg',
             'height_unit': 'cm',
@@ -123,3 +133,140 @@ def mark_data_loaded():
 def is_data_loaded() -> bool:
     """Check if data has been loaded."""
     return st.session_state.get('data_loaded', False)
+
+
+# Dataset selection functions
+
+def get_active_dataset() -> str:
+    """Get the currently active dataset ID."""
+    return st.session_state.get('active_dataset', SYNTHETIC_DATASET_ID)
+
+
+def set_active_dataset(dataset_id: str):
+    """Set the active dataset."""
+    st.session_state.active_dataset = dataset_id
+    # Clear loaded data when switching datasets
+    clear_all_data()
+
+
+def get_active_subject() -> Optional[str]:
+    """Get the currently active subject ID."""
+    return st.session_state.get('active_subject')
+
+
+def set_active_subject(subject_id: Optional[str]):
+    """Set the active subject."""
+    st.session_state.active_subject = subject_id
+    # Clear loaded data when switching subjects
+    clear_all_data()
+
+
+def is_synthetic_mode() -> bool:
+    """Check if using synthetic (demo) data."""
+    return get_active_dataset() == SYNTHETIC_DATASET_ID
+
+
+def get_genetic_data() -> Optional[Dict]:
+    """Get genetic data from session state."""
+    return st.session_state.get('genetic_data')
+
+
+def set_genetic_data(data: Dict):
+    """Set genetic data in session state."""
+    st.session_state.genetic_data = data
+
+
+def get_workouts() -> Optional[List[Dict]]:
+    """Get workout data from session state."""
+    return st.session_state.get('workouts')
+
+
+def set_workouts(data: List[Dict]):
+    """Set workout data in session state."""
+    st.session_state.workouts = data
+
+
+def load_dataset_data(dataset_id: str, subject_id: Optional[str] = None) -> bool:
+    """
+    Load data from a specific dataset and subject.
+
+    Args:
+        dataset_id: The dataset to load from
+        subject_id: Optional subject ID (required for multi-subject datasets)
+
+    Returns:
+        True if data was loaded successfully
+    """
+    if dataset_id == SYNTHETIC_DATASET_ID:
+        # Use synthetic data generator
+        return _load_synthetic_data()
+
+    # Import here to avoid circular imports
+    from .adapters.registry import registry, register_all_adapters
+
+    # Ensure adapters are registered
+    register_all_adapters()
+
+    adapter = registry.get(dataset_id)
+    if adapter is None:
+        return False
+
+    if not adapter.is_available():
+        return False
+
+    if subject_id is None:
+        subjects = adapter.list_subjects()
+        if not subjects:
+            return False
+        subject_id = subjects[0].id
+
+    # Load health data
+    health_data = adapter.load_health_data(subject_id)
+    if health_data:
+        set_health_data(health_data)
+
+    # Load optional data types
+    lab_data = adapter.load_lab_data(subject_id)
+    if lab_data:
+        set_lab_data(lab_data)
+
+    genetic_data = adapter.load_genetic_data(subject_id)
+    if genetic_data:
+        set_genetic_data(genetic_data)
+
+    workouts = adapter.load_workouts(subject_id)
+    if workouts:
+        set_workouts(workouts)
+
+    profile = adapter.get_subject_profile(subject_id)
+    if profile:
+        set_patient_profile(profile)
+
+    mark_data_loaded()
+    return True
+
+
+def _load_synthetic_data() -> bool:
+    """Load synthetic demo data."""
+    from .synthetic.patient_generator import generate_synthetic_patient
+
+    patient = generate_synthetic_patient()
+    set_patient_profile(patient)
+    set_health_data(patient.health_data)
+    set_lab_data(patient.lab_data)
+
+    # Generate genetic data
+    from .synthetic.genetic_generator import generate_genetic_profile
+    genetic_profile = generate_genetic_profile()
+    set_genetic_data({
+        'disease_risks': [vars(r) for r in genetic_profile.disease_risks],
+        'carrier_status': [vars(c) for c in genetic_profile.carrier_status],
+        'drug_responses': [vars(d) for d in genetic_profile.drug_responses],
+        'traits': [vars(t) for t in genetic_profile.traits],
+        'ancestry': vars(genetic_profile.ancestry),
+        'last_updated': genetic_profile.last_updated.isoformat(),
+    })
+
+    set_workouts(patient.workouts)
+    mark_data_loaded()
+    return True

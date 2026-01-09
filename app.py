@@ -593,51 +593,64 @@ st.markdown("""
 
 def init_session_state():
     """Initialize session state variables."""
-    defaults = {
-        'authenticated': True,
-        'user_id': 'demo_user',
-        'user_name': 'Demo User',
-        'connected_devices': [],
-        'health_data': None,
-        'patient_profile': None,
-        'lab_data': None,
-        'demo_mode': True,
-        'data_loaded': False,
-    }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    from src.data.storage import init_storage
+    init_storage()
+
+    # Additional app-specific defaults
+    if 'connected_devices' not in st.session_state:
+        st.session_state.connected_devices = []
 
 
-def load_demo_data():
-    """Load synthetic demo data."""
-    if not st.session_state.data_loaded:
-        from src.data.synthetic.patient_generator import generate_demo_data
-        from src.data.synthetic.lab_generator import generate_lab_history
+def load_data():
+    """Load data based on active dataset."""
+    from src.data.storage import (
+        is_data_loaded, get_active_dataset, get_active_subject,
+        load_dataset_data, SYNTHETIC_DATASET_ID
+    )
+
+    if not is_data_loaded():
+        dataset_id = get_active_dataset()
+        subject_id = get_active_subject()
 
         with st.spinner(""):
-            patient, health_data = generate_demo_data(days=90)
-            st.session_state.patient_profile = patient
-            st.session_state.health_data = health_data
+            load_dataset_data(dataset_id, subject_id)
 
-            labs = generate_lab_history(
-                patient.id, patient.health_conditions,
-                patient.age, patient.sex, num_panels=4
-            )
-            st.session_state.lab_data = labs
+            # Set default connected devices for demo mode
+            if dataset_id == SYNTHETIC_DATASET_ID:
+                st.session_state.connected_devices = [
+                    {'name': 'Oura Ring Gen 3', 'type': 'ring', 'connected': True},
+                    {'name': 'Apple Watch Ultra', 'type': 'watch', 'connected': True},
+                    {'name': 'Dexcom G7', 'type': 'cgm', 'connected': True},
+                ]
+            else:
+                st.session_state.connected_devices = []
 
-            st.session_state.connected_devices = [
-                {'name': 'Oura Ring Gen 3', 'type': 'ring', 'connected': True},
-                {'name': 'Apple Watch Ultra', 'type': 'watch', 'connected': True},
-                {'name': 'Dexcom G7', 'type': 'cgm', 'connected': True},
-            ]
-            st.session_state.data_loaded = True
+
+def get_dataset_options():
+    """Get list of available datasets for dropdown."""
+    from src.data.storage import SYNTHETIC_DATASET_ID, SYNTHETIC_DATASET_NAME
+    from src.data.adapters.registry import registry, register_all_adapters
+
+    register_all_adapters()
+
+    options = {SYNTHETIC_DATASET_ID: SYNTHETIC_DATASET_NAME}
+
+    for metadata in registry.list_all():
+        status = "✓" if registry.get(metadata.id).is_available() else "○"
+        options[metadata.id] = f"{status} {metadata.name}"
+
+    return options
 
 
 def main():
     """Main application."""
+    from src.data.storage import (
+        get_active_dataset, set_active_dataset, get_active_subject,
+        set_active_subject, is_synthetic_mode, SYNTHETIC_DATASET_ID
+    )
+    from src.data.adapters.registry import registry, register_all_adapters
+
     init_session_state()
-    load_demo_data()
 
     # ==========================================================================
     # SIDEBAR
@@ -653,43 +666,108 @@ def main():
         </div>
         ''', unsafe_allow_html=True)
 
+        # Data Source Selector
+        st.markdown('<div class="sidebar-section-title">Data Source</div>', unsafe_allow_html=True)
+
+        dataset_options = get_dataset_options()
+        current_dataset = get_active_dataset()
+
+        selected_dataset = st.selectbox(
+            "Dataset",
+            options=list(dataset_options.keys()),
+            format_func=lambda x: dataset_options[x],
+            index=list(dataset_options.keys()).index(current_dataset) if current_dataset in dataset_options else 0,
+            key="dataset_selector",
+            label_visibility="collapsed"
+        )
+
+        if selected_dataset != current_dataset:
+            set_active_dataset(selected_dataset)
+            st.rerun()
+
+        # Subject selector for multi-subject datasets
+        if selected_dataset != SYNTHETIC_DATASET_ID:
+            register_all_adapters()
+            adapter = registry.get(selected_dataset)
+            if adapter and adapter.is_available():
+                subjects = adapter.list_subjects()
+                if subjects:
+                    subject_options = {s.id: s.display_name for s in subjects}
+                    current_subject = get_active_subject()
+
+                    selected_subject = st.selectbox(
+                        "Subject",
+                        options=list(subject_options.keys()),
+                        format_func=lambda x: subject_options[x],
+                        index=list(subject_options.keys()).index(current_subject) if current_subject in subject_options else 0,
+                        key="subject_selector",
+                        label_visibility="collapsed"
+                    )
+
+                    if selected_subject != current_subject:
+                        set_active_subject(selected_subject)
+                        st.rerun()
+
+        st.markdown('<div class="geist-spacer-24"></div>', unsafe_allow_html=True)
+
         # User profile
         if st.session_state.patient_profile:
             patient = st.session_state.patient_profile
+            # Handle both synthetic patient objects and dict profiles
+            if hasattr(patient, 'name'):
+                name = patient.name
+                age = patient.age
+                activity = patient.activity_level.replace('_', ' ').title()
+            else:
+                name = patient.get('name', 'Unknown')
+                age = patient.get('age', 'N/A')
+                activity = patient.get('activity_level', 'Unknown')
+
             st.markdown(f'''
             <div class="sidebar-section">
                 <div class="sidebar-section-title">Profile</div>
                 <div class="sidebar-item">
-                    <span class="sidebar-item-label">{patient.name}</span>
+                    <span class="sidebar-item-label">{name}</span>
                 </div>
                 <div class="sidebar-item">
-                    <span class="sidebar-item-label" style="color: var(--geist-foreground-muted);">{patient.age} years · {patient.activity_level.replace('_', ' ').title()}</span>
+                    <span class="sidebar-item-label" style="color: var(--geist-foreground-muted);">{age} years · {activity}</span>
                 </div>
             </div>
             ''', unsafe_allow_html=True)
 
         # Connected devices
-        st.markdown('<div class="sidebar-section-title">Devices</div>', unsafe_allow_html=True)
+        if st.session_state.connected_devices:
+            st.markdown('<div class="sidebar-section-title">Devices</div>', unsafe_allow_html=True)
 
-        for device in st.session_state.connected_devices:
-            status = "connected" if device['connected'] else "offline"
-            st.markdown(f'''
-            <div class="sidebar-item">
-                <span class="sidebar-item-label">{device['name']}</span>
-                <div class="sidebar-status">
-                    <span class="status-dot {'offline' if not device['connected'] else ''}"></span>
+            for device in st.session_state.connected_devices:
+                status = "connected" if device['connected'] else "offline"
+                st.markdown(f'''
+                <div class="sidebar-item">
+                    <span class="sidebar-item-label">{device['name']}</span>
+                    <div class="sidebar-status">
+                        <span class="status-dot {'offline' if not device['connected'] else ''}"></span>
+                    </div>
                 </div>
-            </div>
-            ''', unsafe_allow_html=True)
+                ''', unsafe_allow_html=True)
 
-        # Demo badge
-        if st.session_state.demo_mode:
-            st.markdown('''
-            <div class="sidebar-badge">
-                <div class="sidebar-badge-label">Environment</div>
-                <div class="sidebar-badge-value">Demo Mode · Synthetic Data</div>
-            </div>
-            ''', unsafe_allow_html=True)
+        # Data source badge
+        if is_synthetic_mode():
+            badge_label = "Environment"
+            badge_value = "Demo Mode · Synthetic Data"
+        else:
+            adapter = registry.get(selected_dataset)
+            badge_label = "Data Source"
+            badge_value = adapter.metadata.name if adapter else selected_dataset
+
+        st.markdown(f'''
+        <div class="sidebar-badge">
+            <div class="sidebar-badge-label">{badge_label}</div>
+            <div class="sidebar-badge-value">{badge_value}</div>
+        </div>
+        ''', unsafe_allow_html=True)
+
+    # Load data after sidebar (so selections are processed first)
+    load_data()
 
     # ==========================================================================
     # MAIN CONTENT
@@ -703,7 +781,7 @@ def main():
     </div>
     ''', unsafe_allow_html=True)
 
-    # Metrics
+    # Metrics (with graceful None handling)
     if st.session_state.health_data:
         latest = st.session_state.health_data[-1]
         prev = st.session_state.health_data[-2] if len(st.session_state.health_data) > 1 else latest
@@ -711,24 +789,49 @@ def main():
         col1, col2, col3, col4, col5 = st.columns(5)
 
         with col1:
-            delta = latest['sleep_score'] - prev['sleep_score']
-            st.metric("Sleep", f"{latest['sleep_score']}", delta=f"{delta:+.0f}" if delta else None)
+            sleep = latest.get('sleep_score')
+            prev_sleep = prev.get('sleep_score')
+            if sleep is not None:
+                delta = (sleep - prev_sleep) if prev_sleep is not None else None
+                st.metric("Sleep", f"{sleep}", delta=f"{delta:+.0f}" if delta else None)
+            else:
+                st.metric("Sleep", "N/A")
 
         with col2:
-            delta = latest['hrv'] - prev['hrv']
-            st.metric("HRV", f"{latest['hrv']:.0f}", delta=f"{delta:+.0f}" if delta else None)
+            hrv = latest.get('hrv')
+            prev_hrv = prev.get('hrv')
+            if hrv is not None:
+                delta = (hrv - prev_hrv) if prev_hrv is not None else None
+                st.metric("HRV", f"{hrv:.0f}", delta=f"{delta:+.0f}" if delta else None)
+            else:
+                st.metric("HRV", "N/A")
 
         with col3:
-            delta = latest['resting_hr'] - prev['resting_hr']
-            st.metric("RHR", f"{latest['resting_hr']}", delta=f"{delta:+.0f}" if delta else None, delta_color="inverse")
+            rhr = latest.get('resting_hr')
+            prev_rhr = prev.get('resting_hr')
+            if rhr is not None:
+                delta = (rhr - prev_rhr) if prev_rhr is not None else None
+                st.metric("RHR", f"{rhr}", delta=f"{delta:+.0f}" if delta else None, delta_color="inverse")
+            else:
+                st.metric("RHR", "N/A")
 
         with col4:
-            delta = latest['steps'] - prev['steps']
-            st.metric("Steps", f"{latest['steps']:,}", delta=f"{delta:+,}" if delta else None)
+            steps = latest.get('steps')
+            prev_steps = prev.get('steps')
+            if steps is not None:
+                delta = (steps - prev_steps) if prev_steps is not None else None
+                st.metric("Steps", f"{steps:,}", delta=f"{delta:+,}" if delta else None)
+            else:
+                st.metric("Steps", "N/A")
 
         with col5:
-            delta = latest['readiness_score'] - prev['readiness_score']
-            st.metric("Ready", f"{latest['readiness_score']}", delta=f"{delta:+.0f}" if delta else None)
+            ready = latest.get('readiness_score')
+            prev_ready = prev.get('readiness_score')
+            if ready is not None:
+                delta = (ready - prev_ready) if prev_ready is not None else None
+                st.metric("Ready", f"{ready}", delta=f"{delta:+.0f}" if delta else None)
+            else:
+                st.metric("Ready", "N/A")
 
     # Spacer
     st.markdown('<div class="geist-spacer-48"></div>', unsafe_allow_html=True)
@@ -807,6 +910,17 @@ def main():
         ), unsafe_allow_html=True)
 
     with col3:
+        st.markdown(geist_card(
+            "Data Sources",
+            "10+ public health datasets. Fitbit, NHANES, 1000 Genomes, and more."
+        ), unsafe_allow_html=True)
+
+    st.markdown('<div class="geist-spacer-24"></div>', unsafe_allow_html=True)
+
+    # Row 4
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
         st.markdown(geist_card(
             "Devices",
             "Connect Oura, Apple Watch, Whoop, Garmin, and more."
